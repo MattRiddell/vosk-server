@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 #include <string_view>
+#include <execinfo.h>
 
 #include "vosk_api.h"
 
@@ -39,7 +40,16 @@ struct Args
 // Report a failure
 void fail(beast::error_code ec, char const *what)
 {
-    std::cerr << what << ": " << ec.message() << "\n";
+    void *array[10];
+    size_t size;
+
+    // get void*'s for all entries on the stack
+    size = backtrace(array, 10);
+
+    // print out all the frames to stderr
+    fprintf(stderr, "Error: signal %d:\n", ec);
+    backtrace_symbols_fd(array, size, STDERR_FILENO);
+    std::cerr << what << "2: " << ec.message() << "\n";
 }
 
 // Echoes back all received WebSocket messages
@@ -91,24 +101,37 @@ public:
     void
     on_run()
     {
-        // Set suggested timeout settings for the websocket
-        ws_.set_option(
-            websocket::stream_base::timeout::suggested(
-                beast::role_type::server));
+        try
+        {
+            // Set suggested timeout settings for the websocket
+            ws_.set_option(
+                websocket::stream_base::timeout::suggested(
+                    beast::role_type::server));
 
-        // Set a decorator to change the Server of the handshake
-        ws_.set_option(websocket::stream_base::decorator(
-            [](websocket::response_type &res)
-            {
-                res.set(http::field::server,
-                        std::string(BOOST_BEAST_VERSION_STRING) +
-                            " websocket-server-async");
-            }));
-        // Accept the websocket handshake
-        ws_.async_accept(
-            beast::bind_front_handler(
-                &session::on_accept,
-                shared_from_this()));
+            // Set a decorator to change the Server of the handshake
+            ws_.set_option(websocket::stream_base::decorator(
+                [](websocket::response_type &res)
+                {
+                    res.set(http::field::server,
+                            std::string(BOOST_BEAST_VERSION_STRING) +
+                                " websocket-server-async");
+                }));
+            // Accept the websocket handshake
+            ws_.async_accept(
+                beast::bind_front_handler(
+                    &session::on_accept,
+                    shared_from_this()));
+        }
+        catch(beast::system_error const& se)
+        {
+            // This indicates that the session was closed
+            if(se.code() != websocket::error::closed)
+                std::cerr << "Error: " << se.code().message() << std::endl;
+        }
+        catch(std::exception const& e)
+        {
+            std::cerr << "Error: " << e.what() << std::endl;
+        }
     }
 
     void
@@ -153,33 +176,46 @@ public:
         beast::error_code ec,
         std::size_t bytes_transferred)
     {
-        boost::ignore_unused(bytes_transferred);
-
-        // This indicates that the session was closed
-        if (ec == websocket::error::closed)
-            return;
-
-        if (ec)
-            fail(ec, "read");
-
-        if (chunk_.stop)
+        try
         {
-            ws_.close(beast::websocket::close_code::normal);
+            boost::ignore_unused(bytes_transferred);
 
-            return;
+            // This indicates that the session was closed
+            if (ec == websocket::error::closed)
+                return;
+
+            if (ec)
+                fail(ec, "read");
+
+            if (chunk_.stop)
+            {
+                ws_.close(beast::websocket::close_code::normal);
+
+                return;
+            }
+
+            const char *buf = boost::asio::buffer_cast<const char *>(buffer_.cdata());
+            int len = static_cast<int>(buffer_.size());
+            chunk_ = process_chunk(buf, len);
+
+            ws_.text(ws_.got_binary());
+
+            ws_.async_write(
+                boost::asio::const_buffer(chunk_.result.data(), chunk_.result.size()),
+                beast::bind_front_handler(
+                    &session::on_write,
+                    shared_from_this()));
         }
-
-        const char *buf = boost::asio::buffer_cast<const char *>(buffer_.cdata());
-        int len = static_cast<int>(buffer_.size());
-        chunk_ = process_chunk(buf, len);
-
-        ws_.text(ws_.got_binary());
-
-        ws_.async_write(
-            boost::asio::const_buffer(chunk_.result.data(), chunk_.result.size()),
-            beast::bind_front_handler(
-                &session::on_write,
-                shared_from_this()));
+        catch(beast::system_error const& se)
+        {
+            // This indicates that the session was closed
+            if(se.code() != websocket::error::closed)
+                std::cerr << "Error: " << se.code().message() << std::endl;
+        }
+        catch(std::exception const& e)
+        {
+            std::cerr << "Error: " << e.what() << std::endl;
+        }
     }
 
     void
@@ -336,6 +372,7 @@ int main(int argc, char *argv[])
                 ioc.run();
             });
     ioc.run();
+
 
     vosk_model_free(model);
     return EXIT_SUCCESS;

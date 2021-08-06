@@ -1,4 +1,4 @@
-FROM abdullah/kaldi-vosk-server-beast:latest
+FROM neogenai/kaldi-vosk-server-beast:v1.0.0
 
 ENV MODEL_VERSION 0.2
 RUN mkdir /opt/vosk-model-en \
@@ -7,12 +7,14 @@ RUN mkdir /opt/vosk-model-en \
    && unzip vosk-model-en-us-aspire-${MODEL_VERSION}.zip \
    && mv vosk-model-en-us-aspire-${MODEL_VERSION} model \
    && rm -rf vosk-model-en-us-aspire-${MODEL_VERSION}.zip
-
+RUN cd /opt && cp ./vosk-server/websocket-cpp/asr_server .
+RUN cp libvosk.so /usr/lib
 EXPOSE 2700
-WORKDIR /opt/vosk-server/websocket
+WORKDIR /opt/
 ENV LD_LIBRARY_PATH /opt
-ENV VOSK_SHOW_WORDS False
+ENV VOSK_SHOW_WORDS True
 ENV VOSK_ALTERNATIVES 1
-ENV VOSK_SAMPLE_RATE 8000
+ENV VOSK_SAMPLE_RATE 16000
 
-CMD ["./asr_server", "0.0.0.0" ,"2700", "5" ,"/opt/vosk-model-en/model"]
+CMD ["/opt/asr_server", "0.0.0.0" ,"2700", "5" ,"/opt/vosk-model-en/model"]
+# CMD ["bash"]
